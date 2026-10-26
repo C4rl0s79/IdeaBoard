@@ -13,6 +13,7 @@ i interfejsem), `appsettings.json` i `data\`. Na docelowej maszynie nie trzeba n
 | `IdeaBoard.exe` | serwer + UI (Windows x64) |
 | `appsettings.json` | konfiguracja: adres, Google, logowanie hasłem |
 | `install-service.ps1` / `uninstall-service.ps1` | instalacja / usunięcie usługi Windows |
+| `update.ps1` | aktualizacja do najnowszego wydania z GitHuba |
 | `data\board.json` | tablica: kolumny, projekty, pomysły (tworzona przy pierwszym starcie) |
 | `data\users.json` | zaproszeni użytkownicy i ich role |
 | `data\backups\` | dzienna kopia tablicy, 30 ostatnich dni |
@@ -31,9 +32,11 @@ odszyfrować — usuń go, wszyscy zalogują się ponownie.
    cd C:\Apps\IdeaBoard
    powershell -ExecutionPolicy Bypass -File .\install-service.ps1
    ```
-   Skrypt zapyta o hasło konta awaryjnego (min. 10 znaków), nada uprawnienia kontu
-   `LOCAL SERVICE` (odczyt katalogu, zapis tylko w `data\`), zarejestruje usługę `IdeaBoard`
-   (start automatyczny, restart po awarii) i ją uruchomi.
+   Skrypt zapyta o hasło konta awaryjnego (min. 10 znaków), nada kontu `LOCAL SERVICE`
+   prawo zapisu w katalogu aplikacji (żeby mogła się sama aktualizować; poza nim nic),
+   zarejestruje usługę `IdeaBoard` (start automatyczny, restart po awarii) i ją uruchomi.
+   Instalację najłatwiej zacząć od paczki `IdeaBoard-X.Y.Z-win-x64.zip` z
+   [wydań na GitHubie](https://github.com/C4rl0s79/IdeaBoard/releases).
 3. Sprawdź lokalnie: `http://127.0.0.1:5077`.
 
 Ręczne uruchomienie bez usługi (np. test): `.\IdeaBoard.exe` i Ctrl+C.
@@ -120,6 +123,25 @@ Usunięcie użytkownika kończy jego sesje od razu.
 - Kolumny (admin): kliknij nazwę, aby zmienić; `‹ ›` przesuwa, `✕` usuwa pustą.
 - **Eksport** pobiera całą tablicę jako JSON.
 
+## Aktualizacje
+
+Nowe wersje są publikowane jako [wydania na GitHubie](https://github.com/C4rl0s79/IdeaBoard/releases)
+(paczka zip + suma SHA-256).
+
+- **Z aplikacji** — admin widzi w nagłówku przycisk **Aktualizacja X.Y.Z**. Serwer pobiera paczkę,
+  sprawdza sumę kontrolną, podmienia pliki (bez `appsettings.json` i `data\`) i restartuje usługę;
+  strona przeładuje się sama po kilku sekundach.
+- **Ręcznie** — w PowerShell jako administrator, w katalogu aplikacji:
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\update.ps1
+  ```
+  Ten sam skrypt nadaje uprawnienia i ustawienia usługi, których potrzebuje przycisk w aplikacji —
+  przy przejściu ze starszej wersji (bez aktualizacji) uruchom go raz ręcznie.
+
+Poprzedni `IdeaBoard.exe` zostaje na chwilę jako `IdeaBoard.exe.old` i jest usuwany, gdy nowa
+wersja wystartuje. Jeśli nowa wersja nie wstaje: zatrzymaj usługę, zmień nazwę `.old` z powrotem
+na `IdeaBoard.exe` i uruchom usługę.
+
 ## Bezpieczeństwo
 
 - Słucha tylko na loopback; `X-Forwarded-*` przyjmowane tylko od loopback (`cloudflared`).
@@ -134,6 +156,10 @@ Usunięcie użytkownika kończy jego sesje od razu.
 .\scripts\publish.ps1                       # -> dist\IdeaBoard\
 .\scripts\publish.ps1 -Out \\serwer\Apps\IdeaBoard
 ```
+
+Wydanie nowej wersji: podbij `<Version>` w `src\IdeaBoard\IdeaBoard.csproj`, zrób commit na `main`
+i uruchom `.\scripts\release.ps1 -Notes "Co nowego"` — zbuduje paczkę, wypchnie tag `vX.Y.Z`
+i utworzy wydanie na GitHubie (wymaga `gh`).
 
 Publikacja na istniejący katalog nie nadpisuje `appsettings.json` ani `data\`.
 Przy aktualizacji zatrzymaj najpierw usługę na serwerze (`Stop-Service IdeaBoard`), podmień

@@ -39,6 +39,9 @@ builder.Services.AddSingleton(new BoardStore(dataDir, DisplayName));
 builder.Services.AddSingleton(users);
 builder.Services.AddSingleton(authStore);
 builder.Services.AddSingleton<LoginThrottle>();
+builder.Services.AddSingleton(sp => new Updater(baseDir, dataDir,
+    config["Updates:Repo"] is { Length: > 0 } repo ? repo : "C4rl0s79/IdeaBoard",
+    sp.GetRequiredService<ILogger<Updater>>()));
 
 // Keys stay in data\keys so logins survive restarts; DPAPI-encrypted for this machine.
 builder.Services.AddDataProtection()
@@ -134,7 +137,8 @@ if (publicUrl is not null)
     app.Use((ctx, next) =>
     {
         ctx.Request.Scheme = publicUrl.Scheme;
-        ctx.Request.Host = HostString.FromUriComponent(publicUrl);
+        // Authority leaves out a default port; FromUriComponent(Uri) would add ":443" to the redirect URI.
+        ctx.Request.Host = new HostString(publicUrl.Authority);
         return next();
     });
 }
@@ -218,10 +222,24 @@ foreach (var (name, type) in new[]
     assets[name] = (ms.ToArray(), type);
 }
 
+// Cloudflare overrides our Cache-Control on .js/.css (Browser Cache TTL), so after an update a browser
+// would pair the new index.html with an old app.js. Content-hashed URLs make every version distinct.
+{
+    var html = System.Text.Encoding.UTF8.GetString(assets["index.html"].Body);
+    foreach (var name in new[] { "app.js", "app.css", "favicon.svg" })
+    {
+        var hash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(assets[name].Body))[..10];
+        html = html.Replace($"\"/{name}\"", $"\"/{name}?v={hash}\"");
+    }
+    assets["index.html"] = (System.Text.Encoding.UTF8.GetBytes(html), assets["index.html"].Type);
+}
+
 IResult Asset(HttpContext ctx, string name)
 {
     if (!assets.TryGetValue(name, out var a)) return Results.NotFound();
-    ctx.Response.Headers.CacheControl = "no-cache";
+    ctx.Response.Headers.CacheControl = name == "index.html" || !ctx.Request.Query.ContainsKey("v")
+        ? "no-cache"
+        : "public, max-age=31536000, immutable";
     return Results.Bytes(a.Body, a.Type);
 }
 
@@ -267,6 +285,7 @@ pub.MapGet("/me", (HttpContext ctx) =>
         google = googleEnabled,
         password = passwordEnabled,
         passwordSet = authStore.Current is not null,
+        version = Updater.Current.ToString(3),
     };
 });
 
@@ -365,7 +384,39 @@ api.MapDelete("/users/{email}", (string email, HttpContext ctx) =>
     return UsersView();
 });
 
-app.Logger.LogInformation("Login: Google {Google}, password {Password}", googleEnabled ? "on" : "off", passwordEnabled ? "on" : "off");
+api.MapGet("/update", async (HttpContext ctx, Updater updater) =>
+{
+    if (Me(ctx).Role != Roles.Admin) return Results.Json(new { error = "Brak uprawnień." }, statusCode: 403);
+    ReleaseInfo? latest;
+    try
+    {
+        latest = await updater.LatestAsync(force: ctx.Request.Query.ContainsKey("force"));
+    }
+    catch (HttpRequestException e)
+    {
+        return Results.Json(new { error = $"Nie udało się sprawdzić GitHuba: {e.Message}" }, statusCode: 502);
+    }
+    return Results.Ok(new
+    {
+        current = Updater.Current.ToString(3),
+        latest = latest?.Version.ToString(3),
+        available = latest is not null && latest.Version > Updater.Current,
+        notes = latest?.Notes,
+        url = latest?.Url,
+        blocked = updater.BlockedReason(),
+    });
+});
+
+api.MapPost("/update", async (HttpContext ctx, Updater updater) =>
+{
+    if (Me(ctx).Role != Roles.Admin) return Results.Json(new { error = "Brak uprawnień." }, statusCode: 403);
+    var release = await updater.ApplyAsync();
+    return Results.Ok(new { version = release.Version.ToString(3) });
+});
+
+app.Lifetime.ApplicationStarted.Register(() => app.Services.GetRequiredService<Updater>().CleanupAfterStart());
+app.Logger.LogInformation("IdeaBoard {Version}. Login: Google {Google}, password {Password}", Updater.Current.ToString(3),
+    googleEnabled ? "on" : "off", passwordEnabled ? "on" : "off");
 app.Run();
 return 0;
 

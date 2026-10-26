@@ -23,7 +23,7 @@ foreach ($f in Get-ChildItem $stage -File) {
     if ($f.Name -eq 'appsettings.json' -and (Test-Path (Join-Path $Out 'appsettings.json'))) { continue }
     Copy-Item $f.FullName $Out -Force
 }
-Copy-Item (Join-Path $PSScriptRoot 'install-service.ps1'), (Join-Path $PSScriptRoot 'uninstall-service.ps1') $Out -Force
+Copy-Item (Join-Path $PSScriptRoot 'install-service.ps1'), (Join-Path $PSScriptRoot 'uninstall-service.ps1'), (Join-Path $PSScriptRoot 'update.ps1') $Out -Force
 Copy-Item (Join-Path $root 'README.md') (Join-Path $Out 'README.md') -Force
 
 Write-Host "Gotowe: $(Resolve-Path $Out)"

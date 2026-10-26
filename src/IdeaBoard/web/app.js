@@ -625,7 +625,53 @@ async function showApp(user) {
   $('#me').replaceChildren(avatarFor(me), badge, el('span', { class: 'muted small' }, me.role));
   const [b] = await Promise.all([api('GET', '/board'), loadUsers()]);
   setBoard(b);
+  if (isAdmin()) checkUpdate();
 }
+
+// ---------- updates (admin) ----------
+
+let update = null;
+
+async function checkUpdate() {
+  try {
+    update = await api('GET', '/update');
+  } catch {
+    return; // GitHub unreachable — try again on the next page load
+  }
+  const btn = $('#update-btn');
+  $('h1', $('.top')).title = `IdeaBoard ${update.current}`;
+  btn.hidden = !update.available;
+  btn.textContent = `Aktualizacja ${update.latest}`;
+}
+
+$('#update-btn').addEventListener('click', async () => {
+  if (!update?.available) return;
+  if (update.blocked) return alert(update.blocked);
+  const notes = update.notes ? `\n\n${update.notes.slice(0, 1500)}` : '';
+  if (!confirm(`Zainstalować IdeaBoard ${update.latest}? (teraz ${update.current})${notes}\n\nTablica będzie niedostępna przez kilka sekund.`)) return;
+  const btn = $('#update-btn');
+  btn.disabled = true;
+  btn.textContent = 'Aktualizuję…';
+  try {
+    await api('POST', '/update');
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = `Aktualizacja ${update.latest}`;
+    return toast(e.message);
+  }
+  // wait for the service to come back on the new version
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const info = await fetch('/api/me').then(r => r.json());
+      if (info.version === update.latest) return location.reload();
+    } catch { /* restarting */ }
+  }
+  btn.disabled = false;
+  btn.textContent = `Aktualizacja ${update.latest}`;
+  toast('Serwer nie wrócił po 2 minutach — sprawdź usługę IdeaBoard na serwerze.');
+});
 
 function avatarFor(user) {
   const a = el('span', { class: 'avatar' }, initials(user.name));

@@ -116,6 +116,7 @@ label > * { font-size: 14px; color: var(--text); }
 .top select { width: auto; max-width: 190px; padding: 6px 8px; }
 .me { display: flex; align-items: center; gap: 6px; }
 .warn { color: var(--medium); }
+button.update { border-color: var(--low); color: var(--low); background: transparent; }
 .tag-filter { display: flex; flex-wrap: wrap; gap: 4px; }
 
 /* board */
