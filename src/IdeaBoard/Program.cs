@@ -15,6 +15,7 @@ switch (args)
 {
     case ["set-password", ..]: return PasswordCli.Run(dataDir);
     case ["user", .. var rest]: return UserCli.Run(dataDir, rest);
+    case ["domain", .. var rest]: return DomainCli.Run(dataDir, rest);
 }
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = args, ContentRootPath = baseDir });
@@ -29,6 +30,11 @@ var publicUrl = config["PublicUrl"] is { Length: > 0 } pu ? new Uri(pu) : null;
 
 var users = new UserStore(dataDir);
 var authStore = new AuthStore(dataDir);
+var settings = new SettingsStore(dataDir);
+var refused = new RefusedLog();
+
+// An invited or domain-joined Google account may be signed in right now.
+bool GoogleUserAllowed(User u) => u.Role != Roles.Blocked && settings.DomainAllowed(u.Email);
 
 string DisplayName(string key) =>
     key == AppUser.LocalAdminKey ? AppUser.LocalAdmin.Name
@@ -71,7 +77,7 @@ var authBuilder = builder.Services.AddAuthentication(CookieAuthenticationDefault
         var key = ctx.Principal?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         var valid = key == AppUser.LocalAdminKey
             ? passwordEnabled && authStore.Current is { } a && ctx.Principal!.FindFirst("stamp")?.Value == a.Stamp
-            : googleEnabled && key is not null && users.Find(key) is not null;
+            : googleEnabled && key is not null && users.Find(key) is { } u && GoogleUserAllowed(u);
         if (!valid)
         {
             ctx.RejectPrincipal();
@@ -92,20 +98,50 @@ if (googleEnabled)
         o.ClaimActions.MapJsonKey("email_verified", "email_verified");
         o.Events.OnRedirectToAuthorizationEndpoint = ctx =>
         {
-            ctx.Response.Redirect(ctx.RedirectUri + "&prompt=select_account");
+            // With a single allowed domain, Google's account chooser offers only accounts from it.
+            var s = settings.Current;
+            var hd = s.RestrictToDomains && s.Domains.Count == 1 ? "&hd=" + Uri.EscapeDataString(s.Domains[0].Domain) : "";
+            ctx.Response.Redirect(ctx.RedirectUri + "&prompt=select_account" + hd);
             return Task.CompletedTask;
         };
-        // Only invited addresses get in; the Google identity is swapped for our own minimal principal.
+        // Who gets in: invited addresses and anyone from an open domain (auto-added with the domain's role),
+        // never a blocked user, and with domain restriction on, nobody from outside the listed domains.
         o.Events.OnTicketReceived = ctx =>
         {
-            var email = ctx.Principal?.FindFirst(ClaimTypes.Email)?.Value ?? "";
+            var email = (ctx.Principal?.FindFirst(ClaimTypes.Email)?.Value ?? "").Trim().ToLowerInvariant();
+            var name = ctx.Principal?.FindFirst(ClaimTypes.Name)?.Value;
             var verified = string.Equals(ctx.Principal?.FindFirst("email_verified")?.Value, "true", StringComparison.OrdinalIgnoreCase);
-            var user = verified ? users.RecordLogin(email, ctx.Principal?.FindFirst(ClaimTypes.Name)?.Value) : null;
+
+            User? user = null;
+            string? why = null;
+            if (!verified || email.Length == 0) why = "unverified";
+            else if (!settings.DomainAllowed(email)) why = "domain";
+            else
+            {
+                user = users.RecordLogin(email, name);
+                if (user is null && settings.JoinRoleFor(email) is { } joinRole)
+                {
+                    try { users.Invite(email, joinRole, name, $"domena {SettingsStore.DomainOf(email)}"); }
+                    catch (BoardException) { /* added by a parallel login */ }
+                    user = users.RecordLogin(email, name);
+                }
+                if (user is null) why = "invite";
+                else if (user.Role == Roles.Blocked) (user, why) = (null, "blocked");
+            }
+
             if (user is null)
             {
+                var reason = why switch
+                {
+                    "unverified" => "adres niezweryfikowany przez Google",
+                    "domain" => "domena spoza listy",
+                    "blocked" => "konto zablokowane",
+                    _ => "brak zaproszenia",
+                };
+                refused.Add(email, reason, ClientIp(ctx.HttpContext));
                 ctx.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>()
-                    .LogWarning("Google login refused for {Email} (verified: {Verified})", email, verified);
-                ctx.Response.Redirect("/?denied=" + Uri.EscapeDataString(email));
+                    .LogWarning("Google login refused for {Email}: {Reason}", email, reason);
+                ctx.Response.Redirect($"/?denied={Uri.EscapeDataString(email)}&why={why}");
                 ctx.HandleResponse();
                 return Task.CompletedTask;
             }
@@ -182,7 +218,9 @@ AppUser? CurrentUser(HttpContext ctx)
     if (ctx.User.Identity?.IsAuthenticated != true) return null;
     var key = ctx.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
     if (key == AppUser.LocalAdminKey) return AppUser.LocalAdmin;
-    return key is not null && users.Find(key) is { } u ? new AppUser(u.Email, DisplayName(u.Email), u.Email, u.Role) : null;
+    return key is not null && users.Find(key) is { } u && GoogleUserAllowed(u)
+        ? new AppUser(u.Email, DisplayName(u.Email), u.Email, u.Role)
+        : null;
 }
 
 // Role checks for writes: viewers read only; users and columns are admin-only.
@@ -193,7 +231,8 @@ app.Use(async (ctx, next) =>
         && !path.StartsWithSegments("/api/login") && !path.StartsWithSegments("/api/logout"))
     {
         var user = CurrentUser(ctx);
-        var adminOnly = path.StartsWithSegments("/api/users") || path.StartsWithSegments("/api/columns");
+        var adminOnly = path.StartsWithSegments("/api/users") || path.StartsWithSegments("/api/columns")
+            || path.StartsWithSegments("/api/settings");
         if (user is not null && (adminOnly ? user.Role != Roles.Admin : !Roles.CanEdit(user.Role)))
         {
             ctx.Response.StatusCode = 403;
@@ -368,6 +407,8 @@ api.MapDelete("/projects/{id}", (string id, BoardStore s, HttpContext ctx) => Bo
 api.MapGet("/users", () => UsersView());
 api.MapPost("/users", (InviteInput input, HttpContext ctx) =>
 {
+    if ((input.Email ?? "").Contains('@') && !settings.DomainAllowed(input.Email!.Trim()))
+        throw new BoardException("Ta domena jest zablokowana — dodaj ją do listy domen albo wyłącz blokadę.");
     users.Invite(input.Email, input.Role, input.Name, Me(ctx).Key);
     return UsersView();
 });
@@ -382,6 +423,31 @@ api.MapDelete("/users/{email}", (string email, HttpContext ctx) =>
     if (email == Me(ctx).Key) throw new BoardException("Nie możesz usunąć samego siebie.");
     users.Remove(email);
     return UsersView();
+});
+
+object SettingsView() => new
+{
+    domains = settings.Current.Domains,
+    restrict = settings.Current.RestrictToDomains,
+    refused = refused.Recent(),
+};
+
+api.MapGet("/settings", (HttpContext ctx) =>
+    Me(ctx).Role == Roles.Admin ? Results.Ok(SettingsView()) : Results.Json(new { error = "Brak uprawnień." }, statusCode: 403));
+api.MapPost("/settings/domains", (DomainInput input) =>
+{
+    settings.SetDomain(input.Domain, input.JoinRole);
+    return SettingsView();
+});
+api.MapDelete("/settings/domains/{domain}", (string domain) =>
+{
+    settings.RemoveDomain(domain);
+    return SettingsView();
+});
+api.MapPut("/settings/restrict", (RestrictInput input) =>
+{
+    settings.SetRestrict(input.Restrict);
+    return SettingsView();
 });
 
 api.MapGet("/update", async (HttpContext ctx, Updater updater) =>

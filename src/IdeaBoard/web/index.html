@@ -114,9 +114,29 @@
       <span class="spacer"></span>
       <button type="button" class="ghost icon" data-close aria-label="Zamknij">✕</button>
     </div>
-    <p class="muted small">Logowanie kontem Google — wejdzie tylko adres z tej listy.
-      <b>editor</b> dodaje i zmienia pomysły, <b>viewer</b> tylko czyta, <b>admin</b> dodatkowo zarządza użytkownikami i kolumnami.</p>
+    <p class="muted small">Logowanie kontem Google: wchodzą zaproszeni oraz każdy z domeny otwartej poniżej.
+      <b>editor</b> dodaje i zmienia pomysły, <b>viewer</b> tylko czyta, <b>admin</b> dodatkowo zarządza użytkownikami i kolumnami,
+      <b>zablokowany</b> nie wejdzie wcale.</p>
     <p id="google-off" class="warn small" hidden>Logowanie Google nie jest skonfigurowane na serwerze (appsettings.json → Google) — zaproszeni nie będą mogli się jeszcze zalogować.</p>
+
+    <h3>Domeny</h3>
+    <ul id="domains-list" class="plain-list"></ul>
+    <form id="domain-form" class="inline-form">
+      <input id="domain-name" placeholder="pyrkon.pl" required>
+      <select id="domain-role">
+        <option value="viewer">każdy jako viewer</option>
+        <option value="editor">każdy jako editor</option>
+        <option value="">tylko zaproszeni</option>
+      </select>
+      <button type="submit" class="primary">Dodaj</button>
+    </form>
+    <label class="check">
+      <input type="checkbox" id="restrict-domains">
+      Blokuj logowanie Google spoza tych domen (także zaproszonych)
+    </label>
+    <p id="restrict-warn" class="warn small" hidden></p>
+
+    <h3>Lista</h3>
     <table class="users">
       <thead><tr><th>Użytkownik</th><th>Rola</th><th>Ostatnio</th><th></th></tr></thead>
       <tbody id="users-list"></tbody>
@@ -128,6 +148,7 @@
         <option value="editor">editor</option>
         <option value="viewer">viewer</option>
         <option value="admin">admin</option>
+        <option value="blocked">zablokowany</option>
       </select>
       <button type="submit" class="primary">Zaproś</button>
     </form>
@@ -139,6 +160,11 @@
         <button type="button" id="invite-copy" class="ghost">Kopiuj tekst</button>
       </div>
     </div>
+
+    <details id="refused-box">
+      <summary>Odrzucone próby logowania (<span id="refused-count">0</span>)</summary>
+      <ul id="refused-list" class="history"></ul>
+    </details>
   </dialog>
 
   <div id="toast" class="toast" role="status" hidden></div>

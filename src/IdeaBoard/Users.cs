@@ -9,7 +9,9 @@ public static class Roles
     public const string Admin = "admin";
     public const string Editor = "editor";
     public const string Viewer = "viewer";
-    public static readonly string[] All = [Admin, Editor, Viewer];
+    /// <summary>Kept on the list so an open domain does not let the person back in.</summary>
+    public const string Blocked = "blocked";
+    public static readonly string[] All = [Admin, Editor, Viewer, Blocked];
 
     public static bool CanEdit(string role) => role is Admin or Editor;
 }
@@ -150,7 +152,7 @@ public sealed class UserStore(string dataDir)
     }
 
     static string CleanRole(string? role) =>
-        Roles.All.Contains(role) ? role! : throw new BoardException("Rola musi być: admin, editor lub viewer.");
+        Roles.All.Contains(role) ? role! : throw new BoardException("Rola musi być: admin, editor, viewer lub blocked.");
 }
 
 public static class UserCli
@@ -191,8 +193,8 @@ public static class UserCli
         Console.Error.WriteLine("""
             Użycie:
               IdeaBoard.exe user list
-              IdeaBoard.exe user add <email> [admin|editor|viewer]
-              IdeaBoard.exe user role <email> <admin|editor|viewer>
+              IdeaBoard.exe user add <email> [admin|editor|viewer|blocked]
+              IdeaBoard.exe user role <email> <admin|editor|viewer|blocked>
               IdeaBoard.exe user remove <email>
             """);
         return 2;

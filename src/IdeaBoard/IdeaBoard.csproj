@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>IdeaBoard</AssemblyName>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <RootNamespace>IdeaBoard</RootNamespace>
     <InvariantGlobalization>true</InvariantGlobalization>

@@ -151,7 +151,7 @@ function renderFilters() {
   filterAssignee = fillSelect($('#f-assignee-filter'), [
     ['', 'Wszyscy odpowiedzialni'],
     [me.key, 'Moje'],
-    ...users.filter(u => u.key !== me.key).map(u => [u.key, u.name]),
+    ...users.filter(u => u.key !== me.key && u.role !== 'blocked').map(u => [u.key, u.name]),
     ['-', '— nieprzypisane —'],
   ], filterAssignee);
 }
@@ -296,8 +296,8 @@ function openCard(id, columnId) {
   fillSelect($('#f-column'), board.columns.map(c => [c.id, c.name]), card?.columnId || columnId || board.columns[0].id);
   fillSelect($('#f-project'), [['', '— brak —'], ...board.projects.map(p => [p.id, p.name])],
     card ? card.projectId : (filterProject !== '-' ? filterProject : ''));
-  // keep a removed user visible on cards that still point at them
-  const people = users.map(u => [u.key, u.name]);
+  // keep a removed or blocked user visible on cards that still point at them
+  const people = users.filter(u => u.role !== 'blocked' || u.key === card?.assignee).map(u => [u.key, u.name]);
   if (card?.assignee && !users.some(u => u.key === card.assignee)) people.push([card.assignee, `${card.assignee} (usunięty)`]);
   fillSelect($('#f-assignee'), [['', '— nikt —'], ...people],
     card ? card.assignee : (filterAssignee && filterAssignee !== '-' ? filterAssignee : ''));
@@ -424,30 +424,104 @@ function renderUsers() {
     const self = u.key === me.key;
     const local = u.key === 'admin';
     const role = el('select', { disabled: self || local || undefined, 'aria-label': 'Rola' },
-      ['admin', 'editor', 'viewer'].map(r => el('option', { value: r }, r)));
+      [['admin', 'admin'], ['editor', 'editor'], ['viewer', 'viewer'], ['blocked', 'zablokowany']]
+        .map(([v, label]) => el('option', { value: v }, label)));
     role.value = u.role;
     role.addEventListener('change', async () => {
       try { users = await api('PUT', `/users/${encodeURIComponent(u.key)}`, { role: role.value }); render(); }
       catch (e) { toast(e.message); role.value = u.role; }
     });
-    return el('tr', {},
+    const fromDomain = (u.invitedBy || '').startsWith('domena ');
+    return el('tr', { class: u.role === 'blocked' ? 'blocked' : '' },
       el('td', {}, el('div', {}, u.name), u.email && u.email !== u.name ? el('div', { class: 'muted small' }, u.email) : null,
-        local ? el('div', { class: 'muted small' }, 'konto hasła (awaryjne)') : null),
+        local ? el('div', { class: 'muted small' }, 'konto hasła (awaryjne)') : null,
+        fromDomain ? el('div', { class: 'muted small' }, `dołączył(a) z ${u.invitedBy}`) : null),
       el('td', {}, role),
       el('td', { class: 'muted small' }, local ? '—' : u.lastLoginAt ? fmtShort.format(new Date(u.lastLoginAt)) : 'zaproszony'),
-      el('td', {}, self || local ? null : el('button', { class: 'ghost danger', title: 'Usuń dostęp', onclick: async () => {
-        if (!confirm(`Odebrać dostęp ${u.email}?`)) return;
+      el('td', {}, self || local ? null : el('button', { class: 'ghost danger', title: 'Usuń z listy', onclick: async () => {
+        const openDomain = settingsState?.domains.some(d => d.joinRole && u.email.endsWith('@' + d.domain));
+        const msg = openDomain
+          ? `Usunąć ${u.email} z listy?\n\nTa domena jest otwarta — przy następnym logowaniu wróci jako nowy użytkownik. Żeby odciąć dostęp, ustaw rolę „zablokowany”.`
+          : `Odebrać dostęp ${u.email}?`;
+        if (!confirm(msg)) return;
         try { users = await api('DELETE', `/users/${encodeURIComponent(u.key)}`); renderUsers(); render(); }
         catch (e) { toast(e.message); }
       } }, '✕')));
   }));
+  if (settingsState) renderSettings(); // the "locked out by domain" warning depends on the user list
 }
 
 $('#open-users').addEventListener('click', async () => {
-  try { await loadUsers(); } catch (e) { return toast(e.message); }
+  try {
+    [, settingsState] = await Promise.all([loadUsers(), api('GET', '/settings')]);
+  } catch (e) {
+    return toast(e.message);
+  }
   renderUsers();
+  renderSettings();
   $('#invite-result').hidden = true;
   $('#users-dlg').showModal();
+});
+
+// ---------- domains (admin) ----------
+
+let settingsState = null;
+const joinRoles = [['viewer', 'każdy jako viewer'], ['editor', 'każdy jako editor'], ['', 'tylko zaproszeni']];
+
+function renderSettings() {
+  const s = settingsState;
+  $('#domains-list').replaceChildren(...s.domains.map(d => {
+    const role = el('select', { 'aria-label': `Kto wchodzi z ${d.domain}` }, joinRoles.map(([v, label]) => el('option', { value: v }, label)));
+    role.value = d.joinRole;
+    role.addEventListener('change', () => saveSettings('POST', '/settings/domains', { domain: d.domain, joinRole: role.value }));
+    return el('li', {},
+      el('span', { class: 'domain' }, '@' + d.domain),
+      role,
+      el('button', { class: 'ghost danger', title: 'Usuń domenę', onclick: () => {
+        if (confirm(`Usunąć domenę ${d.domain} z listy?`)) saveSettings('DELETE', `/settings/domains/${encodeURIComponent(d.domain)}`);
+      } }, '✕'));
+  }));
+  if (!s.domains.length) $('#domains-list').append(el('li', { class: 'muted small' }, 'Brak domen — wchodzą tylko zaproszeni.'));
+
+  $('#restrict-domains').checked = s.restrict;
+  $('#restrict-domains').disabled = !s.domains.length && !s.restrict;
+  // invited people the restriction locks out — the admin should see that before it bites
+  const allowed = new Set(s.domains.map(d => d.domain));
+  const outside = users.filter(u => u.email && u.role !== 'blocked' && !allowed.has(u.email.split('@')[1]));
+  const warn = $('#restrict-warn');
+  warn.hidden = !outside.length || !s.domains.length;
+  warn.textContent = `${s.restrict ? 'Zablokowani przez domenę' : 'Po włączeniu blokady nie wejdą'}: ${outside.map(u => u.email).join(', ')}`
+    + (s.restrict ? '' : ' (konto hasła działa dalej).');
+
+  $('#refused-count').textContent = s.refused.length;
+  $('#refused-list').replaceChildren(...s.refused.map(r =>
+    el('li', {}, `${fmtDate(r.at)} — ${r.email || '(brak adresu)'}: ${r.reason}${r.ip ? ` [${r.ip}]` : ''}`)));
+  if (!s.refused.length) $('#refused-list').append(el('li', {}, 'Brak.'));
+}
+
+async function saveSettings(method, path, body) {
+  try {
+    settingsState = await api(method, path, body);
+  } catch (e) {
+    toast(e.message);
+  }
+  renderSettings();
+}
+
+$('#domain-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const domain = $('#domain-name').value.trim().replace(/^@/, '').toLowerCase();
+  await saveSettings('POST', '/settings/domains', { domain, joinRole: $('#domain-role').value });
+  if (settingsState.domains.some(d => d.domain === domain)) $('#domain-name').value = '';
+});
+
+$('#restrict-domains').addEventListener('change', e => {
+  const on = e.target.checked;
+  if (on && !confirm('Włączyć blokadę? Logowanie Google będzie możliwe tylko z adresów w wymienionych domenach.')) {
+    e.target.checked = false;
+    return;
+  }
+  saveSettings('PUT', '/settings/restrict', { restrict: on });
 });
 
 $('#invite-form').addEventListener('submit', async e => {
@@ -703,6 +777,7 @@ $('#logout').addEventListener('click', async () => {
 (async () => {
   const params = new URLSearchParams(location.search);
   const denied = params.get('denied');
+  const why = params.get('why');
   if (params.has('denied')) history.replaceState(null, '', '/');
   try {
     const info = await api('GET', '/me');
@@ -710,9 +785,12 @@ $('#logout').addEventListener('click', async () => {
     if (info.authenticated) return await showApp(info.user);
     showLogin();
     if (denied !== null) {
-      $('#login-err').textContent = denied
-        ? `Konto ${denied} nie ma zaproszenia do tej tablicy. Poproś administratora o dodanie.`
-        : 'Logowanie przez Google nie powiodło się. Spróbuj ponownie.';
+      $('#login-err').textContent = !denied
+        ? 'Logowanie przez Google nie powiodło się. Spróbuj ponownie.'
+        : why === 'domain' ? `Logowanie z domeny ${denied.split('@')[1]} jest zablokowane. Użyj konta z dozwolonej domeny.`
+        : why === 'blocked' ? `Konto ${denied} ma zablokowany dostęp do tej tablicy.`
+        : why === 'unverified' ? `Google nie potwierdził adresu ${denied}.`
+        : `Konto ${denied} nie ma zaproszenia do tej tablicy. Poproś administratora o dodanie.`;
     } else if (info.password && !info.passwordSet && !info.google) {
       $('#login-err').textContent = 'Hasło nie jest ustawione. Na serwerze uruchom: IdeaBoard.exe set-password';
     } else if (!info.password && !info.google) {

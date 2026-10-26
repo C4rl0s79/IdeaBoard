@@ -278,6 +278,11 @@ table.users { width: 100%; border-collapse: collapse; margin-top: 8px; }
 table.users th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 500; padding: 4px 6px; }
 table.users td { padding: 6px; border-top: 1px solid var(--border); vertical-align: middle; }
 table.users select { width: auto; padding: 4px 6px; }
+label.check { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: 13px; color: var(--text); margin-top: 10px; }
+label.check input { width: auto; }
+.plain-list li .domain { flex: 1; font-weight: 500; }
+.plain-list li select { width: auto; }
+tr.blocked td:first-child { text-decoration: line-through; color: var(--muted); }
 .invite-result { margin-top: 12px; background: var(--col); border-radius: 10px; padding: 10px 12px; }
 .invite-result p { margin: 0 0 8px; }
 input:disabled, select:disabled, textarea:disabled { opacity: .8; }

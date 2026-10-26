@@ -16,6 +16,7 @@ i interfejsem), `appsettings.json` i `data\`. Na docelowej maszynie nie trzeba n
 | `update.ps1` | aktualizacja do najnowszego wydania z GitHuba |
 | `data\board.json` | tablica: kolumny, projekty, pomysły (tworzona przy pierwszym starcie) |
 | `data\users.json` | zaproszeni użytkownicy i ich role |
+| `data\settings.json` | reguły domen (kto wchodzi z jakiej domeny, blokada innych) |
 | `data\backups\` | dzienna kopia tablicy, 30 ostatnich dni |
 | `data\auth.json` | hash hasła konta awaryjnego (PBKDF2-SHA256) |
 | `data\keys\` | klucze sesji (szyfrowane DPAPI dla tej maszyny) |
@@ -95,6 +96,7 @@ Są dwie metody, można włączyć obie:
 | `admin` | wszystko + zapraszanie użytkowników, role, kolumny |
 | `editor` | dodawać i zmieniać pomysły, notatki, projekty |
 | `viewer` | tylko przeglądać |
+| `blocked` (zablokowany) | nic — nie zaloguje się, nawet z otwartej domeny |
 
 Zapraszanie w aplikacji: **Użytkownicy → Zaproś** (adres konta Google + rola). Po dodaniu
 dostajesz gotowy tekst zaproszenia z linkiem — „Otwórz w poczcie” albo „Kopiuj tekst”.
@@ -110,6 +112,33 @@ To samo z konsoli na serwerze (działa też przy uruchomionej usłudze):
 ```
 
 Usunięcie użytkownika kończy jego sesje od razu.
+
+### Domeny
+
+W **Użytkownicy → Domeny** dodajesz domeny pocztowe, np. `pyrkon.pl`, i dla każdej wybierasz:
+
+- **każdy jako viewer** (albo editor) — każdy z tej domeny może się zalogować bez zaproszenia;
+  przy pierwszym logowaniu trafia na listę z tą rolą, potem admin może mu ją podnieść.
+  Żeby odciąć konkretną osobę z otwartej domeny, ustaw jej rolę **zablokowany**
+  (samo usunięcie nie wystarczy — wróciłaby przy następnym logowaniu).
+- **tylko zaproszeni** — domena jest dozwolona, ale wchodzą tylko adresy z listy.
+
+**Blokuj logowanie Google spoza tych domen** — po włączeniu wpuszczane są tylko adresy
+z wymienionych domen, także spośród zaproszonych; trwające sesje spoza nich wygasają od razu.
+Przy jednej domenie Google od razu proponuje tylko konta z niej. Konto hasła działa dalej.
+Odrzucone próby (kto, kiedy, dlaczego) widać na dole panelu Użytkownicy.
+
+Z konsoli:
+
+```powershell
+.\IdeaBoard.exe domain add pyrkon.pl viewer      # viewer | editor | invited (tylko zaproszeni)
+.\IdeaBoard.exe domain restrict on               # on | off
+.\IdeaBoard.exe domain remove pyrkon.pl
+.\IdeaBoard.exe domain list
+```
+
+Adres z domeny musi być potwierdzony przez Google (`email_verified`) — czyli właściciel konta
+ma dostęp do tej skrzynki.
 
 ## Obsługa
 
