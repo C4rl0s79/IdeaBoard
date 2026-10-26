@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>IdeaBoard</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div id="login" class="login" hidden>
+    <form id="login-form" class="login-box">
+      <h1>IdeaBoard</h1>
+      <p class="muted">Pomysły do rozważenia i wdrożenia</p>
+      <input id="login-pass" type="password" autocomplete="current-password" placeholder="Hasło" required autofocus>
+      <button type="submit" class="primary">Zaloguj</button>
+      <p id="login-err" class="err" role="alert"></p>
+    </form>
+  </div>
+
+  <div id="app" hidden>
+    <header class="top">
+      <h1>IdeaBoard</h1>
+      <button id="new-card" class="primary" title="Nowy pomysł (N)">+ Pomysł</button>
+      <input id="search" type="search" placeholder="Szukaj…  ( / )" aria-label="Szukaj">
+      <div id="tag-filter" class="tag-filter"></div>
+      <span class="spacer"></span>
+      <button id="add-col" class="ghost">+ Kolumna</button>
+      <a class="ghost btn" href="/api/export" download>Eksport</a>
+      <button id="logout" class="ghost">Wyloguj</button>
+    </header>
+    <main id="board" class="board"></main>
+  </div>
+
+  <dialog id="card-dlg">
+    <form id="card-form" method="dialog">
+      <div class="dlg-head">
+        <input id="f-title" class="title-input" placeholder="Tytuł pomysłu" maxlength="200" required>
+        <button type="button" class="ghost icon" data-close aria-label="Zamknij">✕</button>
+      </div>
+      <div class="row">
+        <label>Kolumna <select id="f-column"></select></label>
+        <label>Priorytet
+          <select id="f-priority">
+            <option value="high">Wysoki</option>
+            <option value="medium">Średni</option>
+            <option value="low">Niski</option>
+          </select>
+        </label>
+      </div>
+      <label>Tagi <input id="f-tags" placeholder="np. launcher, ui, emustart" list="tag-list"></label>
+      <datalist id="tag-list"></datalist>
+      <label>Opis <textarea id="f-desc" rows="7" placeholder="Na czym polega, po co, za i przeciw…"></textarea></label>
+
+      <section id="notes-section">
+        <h3>Notatki</h3>
+        <ul id="notes" class="notes"></ul>
+        <div class="note-add">
+          <textarea id="f-note" rows="2" placeholder="Dopisz przemyślenie…"></textarea>
+          <button type="button" id="add-note" class="ghost">Dodaj</button>
+        </div>
+        <details>
+          <summary>Historia</summary>
+          <ul id="history" class="history"></ul>
+        </details>
+      </section>
+
+      <div class="dlg-foot">
+        <button type="button" id="delete-card" class="danger ghost">Usuń</button>
+        <span id="card-meta" class="muted small"></span>
+        <span class="spacer"></span>
+        <button type="button" class="ghost" data-close>Anuluj</button>
+        <button type="submit" class="primary" title="Ctrl+Enter">Zapisz</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
