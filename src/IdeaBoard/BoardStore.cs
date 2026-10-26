@@ -8,6 +8,7 @@ public sealed class Board
     public int Version { get; set; } = 1;
     public long Rev { get; set; }
     public List<Column> Columns { get; set; } = [];
+    public List<Project> Projects { get; set; } = [];
     public List<Card> Cards { get; set; } = [];
 }
 
@@ -17,14 +18,24 @@ public sealed class Column
     public string Name { get; set; } = "";
 }
 
+public sealed class Project
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+}
+
 public sealed class Card
 {
     public string Id { get; set; } = "";
     public string ColumnId { get; set; } = "";
+    public string ProjectId { get; set; } = "";
     public string Title { get; set; } = "";
     public string Description { get; set; } = "";
     public List<string> Tags { get; set; } = [];
     public string Priority { get; set; } = "medium";
+    /// <summary>User key of the person responsible for the idea and its rollout; "" = nobody yet.</summary>
+    public string Assignee { get; set; } = "";
+    public string CreatedBy { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public List<Note> Notes { get; set; } = [];
@@ -34,20 +45,23 @@ public sealed class Card
 public sealed class Note
 {
     public string Id { get; set; } = "";
+    public string By { get; set; } = "";
     public DateTimeOffset At { get; set; }
     public string Text { get; set; } = "";
 }
 
 public sealed class HistoryEntry
 {
+    public string By { get; set; } = "";
     public DateTimeOffset At { get; set; }
     public string Text { get; set; } = "";
 }
 
-public sealed record CardInput(string? Title, string? Description, List<string>? Tags, string? Priority, string? ColumnId);
+public sealed record CardInput(string? Title, string? Description, List<string>? Tags, string? Priority, string? ColumnId,
+    string? ProjectId, string? Assignee);
 public sealed record MoveInput(string? ColumnId, int Index);
 public sealed record NoteInput(string? Text);
-public sealed record ColumnInput(string? Name);
+public sealed record NameInput(string? Name);
 public sealed record ColumnMoveInput(int Index);
 
 public sealed class BoardException(string message, int status = 400) : Exception(message)
@@ -65,13 +79,16 @@ public sealed class BoardStore
 
     readonly string _path;
     readonly string _backupDir;
+    readonly Func<string, string> _displayName;
     readonly Lock _gate = new();
     Board _board;
 
-    public BoardStore(string dataDir)
+    /// <param name="displayName">Resolves a user key to a name, for history entries.</param>
+    public BoardStore(string dataDir, Func<string, string> displayName)
     {
         _path = Path.Combine(dataDir, "board.json");
         _backupDir = Path.Combine(dataDir, "backups");
+        _displayName = displayName;
         if (File.Exists(_path))
         {
             _board = JsonSerializer.Deserialize<Board>(File.ReadAllText(_path), Json)
@@ -125,9 +142,12 @@ public sealed class BoardStore
             File.Delete(old);
     }
 
+    static void Log(Card card, string by, string text) =>
+        card.History.Add(new HistoryEntry { By = by, At = DateTimeOffset.Now, Text = text });
+
     // --- cards ---
 
-    public string AddCard(CardInput input) => Mutate(b =>
+    public string AddCard(CardInput input, string by) => Mutate(b =>
     {
         var column = input.ColumnId is { Length: > 0 } id ? FindColumn(b, id) : b.Columns[0];
         var now = DateTimeOffset.Now;
@@ -135,50 +155,71 @@ public sealed class BoardStore
         {
             Id = NewId(),
             ColumnId = column.Id,
+            ProjectId = CleanProjectId(b, input.ProjectId),
             Title = CleanTitle(input.Title),
             Description = CleanText(input.Description, 20000, "Opis"),
             Tags = CleanTags(input.Tags),
             Priority = CleanPriority(input.Priority),
+            Assignee = (input.Assignee ?? "").Trim(),
+            CreatedBy = by,
             CreatedAt = now,
             UpdatedAt = now,
         };
-        card.History.Add(new HistoryEntry { At = now, Text = $"Utworzono w: {column.Name}" });
+        Log(card, by, $"Utworzono w: {column.Name}");
+        if (card.Assignee.Length > 0) Log(card, by, $"Odpowiedzialny: {_displayName(card.Assignee)}");
         InsertAt(b, card, column.Id, int.MaxValue);
     });
 
-    public string UpdateCard(string id, CardInput input) => Mutate(b =>
+    public string UpdateCard(string id, CardInput input, string by) => Mutate(b =>
     {
         var card = FindCard(b, id);
         if (input.Title is not null) card.Title = CleanTitle(input.Title);
         if (input.Description is not null) card.Description = CleanText(input.Description, 20000, "Opis");
         if (input.Tags is not null) card.Tags = CleanTags(input.Tags);
         if (input.Priority is not null) card.Priority = CleanPriority(input.Priority);
+        if (input.ProjectId is not null)
+        {
+            var projectId = CleanProjectId(b, input.ProjectId);
+            if (projectId != card.ProjectId)
+            {
+                Log(card, by, $"Projekt: {ProjectName(b, card.ProjectId)} → {ProjectName(b, projectId)}");
+                card.ProjectId = projectId;
+            }
+        }
+        if (input.Assignee is not null && input.Assignee.Trim() != card.Assignee)
+        {
+            card.Assignee = input.Assignee.Trim();
+            Log(card, by, card.Assignee.Length > 0 ? $"Odpowiedzialny: {_displayName(card.Assignee)}" : "Odpowiedzialny: nikt");
+        }
         card.UpdatedAt = DateTimeOffset.Now;
         if (input.ColumnId is { Length: > 0 } columnId && columnId != card.ColumnId)
-            MoveCore(b, card, columnId, int.MaxValue);
+            MoveCore(b, card, columnId, int.MaxValue, by);
     });
 
-    public string MoveCard(string id, MoveInput input) => Mutate(b =>
-        MoveCore(b, FindCard(b, id), input.ColumnId ?? throw new BoardException("Brak kolumny docelowej."), input.Index));
+    public string MoveCard(string id, MoveInput input, string by) => Mutate(b =>
+        MoveCore(b, FindCard(b, id), input.ColumnId ?? throw new BoardException("Brak kolumny docelowej."), input.Index, by));
 
     public string DeleteCard(string id) => Mutate(b => b.Cards.Remove(FindCard(b, id)));
 
-    public string AddNote(string id, NoteInput input) => Mutate(b =>
+    public string AddNote(string id, NoteInput input, string by) => Mutate(b =>
     {
         var card = FindCard(b, id);
         var text = CleanText(input.Text, 5000, "Notatka");
         if (text.Length == 0) throw new BoardException("Notatka jest pusta.");
-        card.Notes.Add(new Note { Id = NewId(), At = DateTimeOffset.Now, Text = text });
+        card.Notes.Add(new Note { Id = NewId(), By = by, At = DateTimeOffset.Now, Text = text });
         card.UpdatedAt = DateTimeOffset.Now;
     });
 
-    public string DeleteNote(string id, string noteId) => Mutate(b =>
+    /// <param name="by">Who deletes; only the author or an admin may.</param>
+    public string DeleteNote(string id, string noteId, string by, bool isAdmin) => Mutate(b =>
     {
         var card = FindCard(b, id);
-        if (card.Notes.RemoveAll(n => n.Id == noteId) == 0) throw new BoardException("Nie ma takiej notatki.", 404);
+        var note = card.Notes.FirstOrDefault(n => n.Id == noteId) ?? throw new BoardException("Nie ma takiej notatki.", 404);
+        if (!isAdmin && note.By != by) throw new BoardException("Możesz usuwać tylko własne notatki.", 403);
+        card.Notes.Remove(note);
     });
 
-    static void MoveCore(Board b, Card card, string columnId, int index)
+    static void MoveCore(Board b, Card card, string columnId, int index, string by)
     {
         var target = FindColumn(b, columnId);
         b.Cards.Remove(card);
@@ -186,7 +227,7 @@ public sealed class BoardStore
         if (card.ColumnId != target.Id)
         {
             var from = b.Columns.FirstOrDefault(c => c.Id == card.ColumnId)?.Name ?? "?";
-            card.History.Add(new HistoryEntry { At = DateTimeOffset.Now, Text = $"Przeniesiono: {from} → {target.Name}" });
+            Log(card, by, $"Przeniesiono: {from} → {target.Name}");
             card.ColumnId = target.Id;
             card.UpdatedAt = DateTimeOffset.Now;
         }
@@ -205,14 +246,14 @@ public sealed class BoardStore
 
     // --- columns ---
 
-    public string AddColumn(ColumnInput input) => Mutate(b =>
+    public string AddColumn(NameInput input) => Mutate(b =>
     {
         if (b.Columns.Count >= 20) throw new BoardException("Za dużo kolumn (maks. 20).");
-        b.Columns.Add(new Column { Id = NewId(), Name = CleanColumnName(input.Name) });
+        b.Columns.Add(new Column { Id = NewId(), Name = CleanName(input.Name, "kolumny") });
     });
 
-    public string RenameColumn(string id, ColumnInput input) => Mutate(b =>
-        FindColumn(b, id).Name = CleanColumnName(input.Name));
+    public string RenameColumn(string id, NameInput input) => Mutate(b =>
+        FindColumn(b, id).Name = CleanName(input.Name, "kolumny"));
 
     public string MoveColumn(string id, ColumnMoveInput input) => Mutate(b =>
     {
@@ -229,6 +270,32 @@ public sealed class BoardStore
         b.Columns.Remove(column);
     });
 
+    // --- projects ---
+
+    public string AddProject(NameInput input) => Mutate(b =>
+    {
+        if (b.Projects.Count >= 100) throw new BoardException("Za dużo projektów (maks. 100).");
+        var name = CleanName(input.Name, "projektu");
+        if (b.Projects.Any(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)))
+            throw new BoardException("Projekt o tej nazwie już istnieje.", 409);
+        b.Projects.Add(new Project { Id = NewId(), Name = name });
+    });
+
+    public string RenameProject(string id, NameInput input) => Mutate(b =>
+        FindProject(b, id).Name = CleanName(input.Name, "projektu"));
+
+    /// <summary>Cards of a deleted project stay on the board, without a project.</summary>
+    public string DeleteProject(string id, string by) => Mutate(b =>
+    {
+        var project = FindProject(b, id);
+        foreach (var card in b.Cards.Where(c => c.ProjectId == id))
+        {
+            card.ProjectId = "";
+            Log(card, by, $"Projekt usunięty: {project.Name}");
+        }
+        b.Projects.Remove(project);
+    });
+
     // --- validation ---
 
     static Card FindCard(Board b, string id) =>
@@ -236,6 +303,15 @@ public sealed class BoardStore
 
     static Column FindColumn(Board b, string id) =>
         b.Columns.FirstOrDefault(c => c.Id == id) ?? throw new BoardException("Nie ma takiej kolumny (odśwież stronę).", 404);
+
+    static Project FindProject(Board b, string id) =>
+        b.Projects.FirstOrDefault(p => p.Id == id) ?? throw new BoardException("Nie ma takiego projektu (odśwież stronę).", 404);
+
+    static string ProjectName(Board b, string id) =>
+        id.Length == 0 ? "brak" : b.Projects.FirstOrDefault(p => p.Id == id)?.Name ?? "?";
+
+    static string CleanProjectId(Board b, string? id) =>
+        string.IsNullOrEmpty(id) ? "" : FindProject(b, id).Id;
 
     static string CleanTitle(string? title)
     {
@@ -245,10 +321,10 @@ public sealed class BoardStore
         return t;
     }
 
-    static string CleanColumnName(string? name)
+    static string CleanName(string? name, string what)
     {
         var n = (name ?? "").Trim();
-        if (n.Length is 0 or > 60) throw new BoardException("Nazwa kolumny: 1–60 znaków.");
+        if (n.Length is 0 or > 60) throw new BoardException($"Nazwa {what}: 1–60 znaków.");
         return n;
     }
 

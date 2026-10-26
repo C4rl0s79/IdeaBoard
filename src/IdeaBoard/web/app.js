@@ -5,10 +5,17 @@ const boardEl = $('#board');
 const dlg = $('#card-dlg');
 
 let board = null;
+let me = null;       // { key, name, email, role }
+let users = [];      // [{ key, name, email, role, ... }]
 let filterText = '';
 let filterTag = null;
+let filterProject = ''; // '' all, '-' none, else project id
+let filterAssignee = ''; // '' all, '-' nobody, else user key
 let editingId = null; // card open in the dialog; null = new card
 let justDragged = false;
+
+const canEdit = () => me && me.role !== 'viewer';
+const isAdmin = () => me && me.role === 'admin';
 
 // ---------- api ----------
 
@@ -47,9 +54,16 @@ function setBoard(b) {
     const card = findCard(editingId);
     if (card) renderNotes(card); else dlg.close();
   }
+  if ($('#projects-dlg').open) renderProjects();
+}
+
+async function loadUsers() {
+  users = await api('GET', '/users');
 }
 
 const findCard = id => board.cards.find(c => c.id === id);
+const projectName = id => board.projects.find(p => p.id === id)?.name;
+const userName = key => users.find(u => u.key === key)?.name || key;
 
 // ---------- helpers ----------
 
@@ -79,11 +93,38 @@ function toast(msg) {
 
 const parseTags = s => s.split(',').map(t => t.trim().replace(/^#/, '')).filter(Boolean);
 
+function initials(name) {
+  const parts = name.replace(/@.*/, '').split(/[\s._-]+/).filter(Boolean);
+  return ((parts[0]?.[0] || '?') + (parts[1]?.[0] || '')).toUpperCase();
+}
+
+// Stable hue per person, so the same owner always gets the same avatar colour.
+function hue(s) {
+  let h = 0;
+  for (const ch of s) h = (h * 31 + ch.codePointAt(0)) % 360;
+  return h;
+}
+
+function avatar(key) {
+  const a = el('span', { class: 'avatar', title: `Odpowiedzialny: ${userName(key)}` }, initials(userName(key)));
+  a.style.setProperty('--h', hue(key));
+  return a;
+}
+
 function matches(card) {
   if (filterTag && !card.tags.some(t => t.toLowerCase() === filterTag)) return false;
+  if (filterProject && (filterProject === '-' ? card.projectId : card.projectId !== filterProject)) return false;
+  if (filterAssignee && (filterAssignee === '-' ? card.assignee : card.assignee !== filterAssignee)) return false;
   if (!filterText) return true;
-  const hay = [card.title, card.description, ...card.tags, ...card.notes.map(n => n.text)].join('\n').toLowerCase();
+  const hay = [card.title, card.description, ...card.tags, ...card.notes.map(n => n.text),
+    projectName(card.projectId) || '', card.assignee ? userName(card.assignee) : ''].join('\n').toLowerCase();
   return filterText.split(/\s+/).every(w => hay.includes(w));
+}
+
+function fillSelect(select, options, value) {
+  select.replaceChildren(...options.map(([v, label]) => el('option', { value: v }, label)));
+  select.value = options.some(([v]) => v === value) ? value : options[0][0];
+  return select.value;
 }
 
 // ---------- render ----------
@@ -93,6 +134,7 @@ function render() {
   const colScroll = {};
   for (const c of boardEl.querySelectorAll('.col')) colScroll[c.dataset.id] = $('.col-cards', c).scrollTop;
 
+  renderFilters();
   boardEl.replaceChildren(...board.columns.map((col, i) => renderColumn(col, i)));
   renderTagFilter();
 
@@ -100,28 +142,54 @@ function render() {
   for (const c of boardEl.querySelectorAll('.col')) $('.col-cards', c).scrollTop = colScroll[c.dataset.id] || 0;
 }
 
+function renderFilters() {
+  filterProject = fillSelect($('#f-project-filter'), [
+    ['', 'Wszystkie projekty'],
+    ...board.projects.map(p => [p.id, p.name]),
+    ['-', '— bez projektu —'],
+  ], filterProject);
+  filterAssignee = fillSelect($('#f-assignee-filter'), [
+    ['', 'Wszyscy odpowiedzialni'],
+    [me.key, 'Moje'],
+    ...users.filter(u => u.key !== me.key).map(u => [u.key, u.name]),
+    ['-', '— nieprzypisane —'],
+  ], filterAssignee);
+}
+
 function renderColumn(col, index) {
   const cards = board.cards.filter(c => c.columnId === col.id);
   const visible = cards.filter(matches).length;
   const count = visible === cards.length ? String(cards.length) : `${visible}/${cards.length}`;
 
-  const name = el('div', { class: 'col-name', title: 'Kliknij, aby zmienić nazwę', onclick: () => renameColumn(col, name) }, col.name);
-  const tools = el('div', { class: 'col-tools' },
-    index > 0 ? el('button', { class: 'ghost', title: 'Przesuń w lewo', onclick: () => change('POST', `/columns/${col.id}/move`, { index: index - 1 }) }, '‹') : null,
-    index < board.columns.length - 1 ? el('button', { class: 'ghost', title: 'Przesuń w prawo', onclick: () => change('POST', `/columns/${col.id}/move`, { index: index + 1 }) }, '›') : null,
-    el('button', { class: 'ghost', title: 'Usuń kolumnę', onclick: () => deleteColumn(col, cards.length) }, '✕'),
-  );
+  const name = el('div', { class: 'col-name' }, col.name);
+  let tools = null;
+  if (isAdmin()) {
+    name.title = 'Kliknij, aby zmienić nazwę';
+    name.classList.add('editable');
+    name.addEventListener('click', () => renameColumn(col, name));
+    tools = el('div', { class: 'col-tools' },
+      index > 0 ? el('button', { class: 'ghost', title: 'Przesuń w lewo', onclick: () => change('POST', `/columns/${col.id}/move`, { index: index - 1 }) }, '‹') : null,
+      index < board.columns.length - 1 ? el('button', { class: 'ghost', title: 'Przesuń w prawo', onclick: () => change('POST', `/columns/${col.id}/move`, { index: index + 1 }) }, '›') : null,
+      el('button', { class: 'ghost', title: 'Usuń kolumnę', onclick: () => deleteColumn(col, cards.length) }, '✕'),
+    );
+  }
 
   return el('section', { class: 'col', dataset: { id: col.id } },
     el('div', { class: 'col-head' }, name, el('span', { class: 'col-count' }, count), tools),
     el('div', { class: 'col-cards' }, cards.map(renderCard)),
-    renderQuickAdd(col),
+    canEdit() ? renderQuickAdd(col) : null,
   );
 }
 
 function renderCard(card) {
-  const foot = el('div', { class: 'card-foot' }, card.tags.map(t => el('span', { class: 'chip' }, t)));
-  if (card.notes.length) foot.append(el('span', { class: 'muted', title: 'Notatki' }, `✎ ${card.notes.length}`));
+  const project = projectName(card.projectId);
+  const foot = el('div', { class: 'card-foot' },
+    project ? el('span', { class: 'chip project' }, project) : null,
+    card.tags.map(t => el('span', { class: 'chip' }, t)),
+    el('span', { class: 'spacer' }),
+    card.notes.length ? el('span', { class: 'muted', title: 'Notatki' }, `✎ ${card.notes.length}`) : null,
+    card.assignee ? avatar(card.assignee) : null,
+  );
   return el('article', {
     class: `card p-${card.priority}${matches(card) ? '' : ' filtered'}`,
     tabindex: 0,
@@ -129,7 +197,7 @@ function renderCard(card) {
   },
     el('div', { class: 'card-title' }, card.title),
     card.description ? el('div', { class: 'card-desc' }, card.description) : null,
-    card.tags.length || card.notes.length ? foot : null,
+    project || card.tags.length || card.notes.length || card.assignee ? foot : null,
   );
 }
 
@@ -143,7 +211,9 @@ function renderQuickAdd(col) {
       if (e.key === 'Enter' && input.value.trim()) {
         const title = input.value.trim();
         input.value = '';
-        if (await change('POST', '/cards', { title, columnId: col.id })) {
+        // new ideas inherit the project currently filtered on
+        const projectId = filterProject && filterProject !== '-' ? filterProject : '';
+        if (await change('POST', '/cards', { title, columnId: col.id, projectId })) {
           // re-render replaced this node; reopen the input in the fresh column
           const fresh = boardEl.querySelector(`.col[data-id="${col.id}"] .col-add > button`);
           if (fresh) fresh.click();
@@ -176,6 +246,9 @@ function renderTagFilter() {
   }, v.name)));
   $('#tag-list').replaceChildren(...sorted.map(([, v]) => el('option', { value: v.name })));
 }
+
+$('#f-project-filter').addEventListener('change', e => { filterProject = e.target.value; render(); });
+$('#f-assignee-filter').addEventListener('change', e => { filterAssignee = e.target.value; render(); });
 
 // ---------- columns ----------
 
@@ -220,12 +293,21 @@ function openCard(id, columnId) {
   $('#f-desc').value = card?.description || '';
   $('#f-tags').value = card ? card.tags.join(', ') : (filterTag ? tagSpelling(filterTag) : '');
   $('#f-priority').value = card?.priority || 'medium';
-  $('#f-column').replaceChildren(...board.columns.map(c => el('option', { value: c.id }, c.name)));
-  $('#f-column').value = card?.columnId || columnId || board.columns[0].id;
+  fillSelect($('#f-column'), board.columns.map(c => [c.id, c.name]), card?.columnId || columnId || board.columns[0].id);
+  fillSelect($('#f-project'), [['', '— brak —'], ...board.projects.map(p => [p.id, p.name])],
+    card ? card.projectId : (filterProject !== '-' ? filterProject : ''));
+  // keep a removed user visible on cards that still point at them
+  const people = users.map(u => [u.key, u.name]);
+  if (card?.assignee && !users.some(u => u.key === card.assignee)) people.push([card.assignee, `${card.assignee} (usunięty)`]);
+  fillSelect($('#f-assignee'), [['', '— nikt —'], ...people],
+    card ? card.assignee : (filterAssignee && filterAssignee !== '-' ? filterAssignee : ''));
   $('#f-note').value = '';
   $('#notes-section').hidden = !card;
-  $('#delete-card').hidden = !card;
-  $('#card-meta').textContent = card ? `Utworzono ${fmtDate(card.createdAt)}` : '';
+  $('#delete-card').hidden = !card || !canEdit();
+  $('#card-meta').textContent = card
+    ? `Dodał(a) ${card.createdBy ? userName(card.createdBy) : '—'}, ${fmtDate(card.createdAt)}`
+    : '';
+  for (const f of dlg.querySelectorAll('input, select, textarea')) f.disabled = !canEdit();
   if (card) renderNotes(card);
   dlg.showModal();
   if (!card) $('#f-title').focus();
@@ -240,22 +322,27 @@ function tagSpelling(tagKey) {
 function renderNotes(card) {
   $('#notes').replaceChildren(...card.notes.map(n => el('li', {},
     el('div', { class: 'note-meta' },
-      el('span', {}, fmtDate(n.at)),
-      el('button', { type: 'button', class: 'ghost', onclick: () => {
-        if (confirm('Usunąć notatkę?')) change('DELETE', `/cards/${card.id}/notes/${n.id}`);
-      } }, 'usuń')),
+      el('span', {}, `${n.by ? userName(n.by) : '—'} · ${fmtDate(n.at)}`),
+      canEdit() && (isAdmin() || n.by === me.key)
+        ? el('button', { type: 'button', class: 'ghost', onclick: () => {
+          if (confirm('Usunąć notatkę?')) change('DELETE', `/cards/${card.id}/notes/${n.id}`);
+        } }, 'usuń')
+        : null),
     n.text)));
   $('#history').replaceChildren(...[...card.history].reverse().map(h =>
-    el('li', {}, `${fmtDate(h.at)} — ${h.text}`)));
+    el('li', {}, `${fmtDate(h.at)} — ${h.text}${h.by ? ` (${userName(h.by)})` : ''}`)));
 }
 
 async function saveCard() {
+  if (!canEdit()) return;
   const body = {
     title: $('#f-title').value,
     description: $('#f-desc').value,
     tags: parseTags($('#f-tags').value),
     priority: $('#f-priority').value,
     columnId: $('#f-column').value,
+    projectId: $('#f-project').value,
+    assignee: $('#f-assignee').value,
   };
   if (!body.title.trim()) return toast('Tytuł jest wymagany.');
   const ok = editingId ? await change('PUT', `/cards/${editingId}`, body) : await change('POST', '/cards', body);
@@ -266,8 +353,10 @@ $('#card-form').addEventListener('submit', e => { e.preventDefault(); saveCard()
 dlg.addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveCard(); }
 });
-for (const b of dlg.querySelectorAll('[data-close]')) b.addEventListener('click', () => dlg.close());
-dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); }); // backdrop
+for (const d of document.querySelectorAll('dialog')) {
+  for (const b of d.querySelectorAll('[data-close]')) b.addEventListener('click', () => d.close());
+  d.addEventListener('click', e => { if (e.target === d) d.close(); }); // backdrop
+}
 dlg.addEventListener('close', () => { editingId = null; });
 
 $('#add-note').addEventListener('click', async () => {
@@ -296,13 +385,103 @@ boardEl.addEventListener('keydown', e => {
   if (card && e.key === 'Enter') openCard(card.dataset.id);
 });
 
+// ---------- projects ----------
+
+function renderProjects() {
+  $('#projects-list').replaceChildren(...board.projects.map(p => {
+    const count = board.cards.filter(c => c.projectId === p.id).length;
+    const input = el('input', { value: p.name, maxlength: 60, 'aria-label': 'Nazwa projektu' });
+    input.addEventListener('change', () => {
+      if (input.value.trim() && input.value.trim() !== p.name) change('PUT', `/projects/${p.id}`, { name: input.value.trim() });
+    });
+    return el('li', {},
+      input,
+      el('span', { class: 'muted small' }, `${count} pomysł(ów)`),
+      el('button', { class: 'ghost danger', title: 'Usuń projekt', onclick: () => {
+        if (confirm(`Usunąć projekt „${p.name}”? ${count} pomysł(ów) zostanie bez projektu.`)) change('DELETE', `/projects/${p.id}`);
+      } }, '✕'));
+  }));
+  if (!board.projects.length) $('#projects-list').append(el('li', { class: 'muted' }, 'Brak projektów.'));
+}
+
+$('#open-projects').addEventListener('click', () => {
+  renderProjects();
+  $('#projects-dlg').showModal();
+  $('#project-name').focus();
+});
+
+$('#project-add').addEventListener('submit', async e => {
+  e.preventDefault();
+  if (await change('POST', '/projects', { name: $('#project-name').value.trim() })) $('#project-name').value = '';
+});
+
+// ---------- users ----------
+
+const fmtShort = new Intl.DateTimeFormat('pl-PL', { dateStyle: 'short' });
+
+function renderUsers() {
+  $('#users-list').replaceChildren(...users.map(u => {
+    const self = u.key === me.key;
+    const local = u.key === 'admin';
+    const role = el('select', { disabled: self || local || undefined, 'aria-label': 'Rola' },
+      ['admin', 'editor', 'viewer'].map(r => el('option', { value: r }, r)));
+    role.value = u.role;
+    role.addEventListener('change', async () => {
+      try { users = await api('PUT', `/users/${encodeURIComponent(u.key)}`, { role: role.value }); render(); }
+      catch (e) { toast(e.message); role.value = u.role; }
+    });
+    return el('tr', {},
+      el('td', {}, el('div', {}, u.name), u.email && u.email !== u.name ? el('div', { class: 'muted small' }, u.email) : null,
+        local ? el('div', { class: 'muted small' }, 'konto hasła (awaryjne)') : null),
+      el('td', {}, role),
+      el('td', { class: 'muted small' }, local ? '—' : u.lastLoginAt ? fmtShort.format(new Date(u.lastLoginAt)) : 'zaproszony'),
+      el('td', {}, self || local ? null : el('button', { class: 'ghost danger', title: 'Usuń dostęp', onclick: async () => {
+        if (!confirm(`Odebrać dostęp ${u.email}?`)) return;
+        try { users = await api('DELETE', `/users/${encodeURIComponent(u.key)}`); renderUsers(); render(); }
+        catch (e) { toast(e.message); }
+      } }, '✕')));
+  }));
+}
+
+$('#open-users').addEventListener('click', async () => {
+  try { await loadUsers(); } catch (e) { return toast(e.message); }
+  renderUsers();
+  $('#invite-result').hidden = true;
+  $('#users-dlg').showModal();
+});
+
+$('#invite-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const email = $('#invite-email').value.trim().toLowerCase();
+  try {
+    users = await api('POST', '/users', { email, role: $('#invite-role').value });
+  } catch (ex) {
+    return toast(ex.message);
+  }
+  $('#invite-email').value = '';
+  renderUsers();
+  render();
+  const link = location.origin + '/';
+  const text = `Cześć,\n\nzapraszam do tablicy pomysłów IdeaBoard: ${link}\n` +
+    `Zaloguj się przyciskiem „Zaloguj przez Google”, kontem ${email}.\n\n${me.name}`;
+  $('#invite-who').textContent = email;
+  $('#invite-text').value = text;
+  $('#invite-mail').href = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent('Zaproszenie do IdeaBoard')}&body=${encodeURIComponent(text)}`;
+  $('#invite-result').hidden = false;
+});
+
+$('#invite-copy').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText($('#invite-text').value); toast('Skopiowano.'); }
+  catch { $('#invite-text').select(); }
+});
+
 // ---------- drag & drop (mouse + touch long-press) ----------
 
 let drag = null;
 
 boardEl.addEventListener('pointerdown', e => {
   const card = e.target.closest('.card');
-  if (!card || e.button !== 0) return;
+  if (!card || e.button !== 0 || !canEdit()) return;
   drag = { card, x: e.clientX, y: e.clientY, pointerId: e.pointerId, touch: e.pointerType !== 'mouse', active: false };
   if (drag.touch) drag.timer = setTimeout(() => drag && !drag.active && beginDrag(), 350);
 });
@@ -406,16 +585,16 @@ $('#search').addEventListener('input', e => {
 });
 
 document.addEventListener('keydown', e => {
-  if (dlg.open || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
+  if (document.querySelector('dialog[open]') || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
   if (e.key === '/') { e.preventDefault(); $('#search').focus(); }
-  if (e.key === 'n' || e.key === 'N') { e.preventDefault(); openCard(null); }
+  if ((e.key === 'n' || e.key === 'N') && canEdit()) { e.preventDefault(); openCard(null); }
 });
 
 async function refresh() {
-  if (drag || dlg.open || document.activeElement?.closest?.('.col')?.querySelector('input')) return;
+  if (drag || document.querySelector('dialog[open]') || document.activeElement?.closest?.('.col')?.querySelector('input')) return;
   try {
-    const b = await api('GET', '/board');
-    if (!board || b.rev !== board.rev) setBoard(b);
+    const [b] = await Promise.all([api('GET', '/board'), loadUsers()]);
+    if (!board || b.rev !== board.rev) setBoard(b); else render();
   } catch { /* api() already handled 401 */ }
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden && board) refresh(); });
@@ -423,17 +602,35 @@ setInterval(() => { if (!document.hidden && board) refresh(); }, 60_000);
 
 // ---------- login ----------
 
+let loginOptions = { google: false, password: true };
+
 function showLogin() {
   $('#app').hidden = true;
   $('#login').hidden = false;
-  if (dlg.open) dlg.close();
-  $('#login-pass').focus();
+  for (const d of document.querySelectorAll('dialog[open]')) d.close();
+  $('#google-login').hidden = !loginOptions.google;
+  $('#login-form').hidden = !loginOptions.password;
+  $('#login-sep').hidden = !(loginOptions.google && loginOptions.password);
+  if (loginOptions.password && !loginOptions.google) $('#login-pass').focus();
 }
 
-async function showApp() {
+async function showApp(user) {
+  me = user;
   $('#login').hidden = true;
   $('#app').hidden = false;
-  setBoard(await api('GET', '/board'));
+  for (const n of document.querySelectorAll('[data-edit]')) n.hidden = !canEdit();
+  for (const n of document.querySelectorAll('[data-admin]')) n.hidden = !isAdmin();
+  $('#google-off').hidden = loginOptions.google;
+  const badge = el('span', {}, me.name);
+  $('#me').replaceChildren(avatarFor(me), badge, el('span', { class: 'muted small' }, me.role));
+  const [b] = await Promise.all([api('GET', '/board'), loadUsers()]);
+  setBoard(b);
+}
+
+function avatarFor(user) {
+  const a = el('span', { class: 'avatar' }, initials(user.name));
+  a.style.setProperty('--h', hue(user.key));
+  return a;
 }
 
 $('#login-form').addEventListener('submit', async e => {
@@ -443,7 +640,8 @@ $('#login-form').addEventListener('submit', async e => {
   try {
     await api('POST', '/login', { password: $('#login-pass').value });
     $('#login-pass').value = '';
-    await showApp();
+    const meInfo = await api('GET', '/me');
+    await showApp(meInfo.user);
   } catch (ex) {
     err.textContent = ex.message;
   }
@@ -452,16 +650,27 @@ $('#login-form').addEventListener('submit', async e => {
 $('#logout').addEventListener('click', async () => {
   await api('POST', '/logout').catch(() => {});
   board = null;
+  me = null;
   showLogin();
 });
 
 (async () => {
+  const params = new URLSearchParams(location.search);
+  const denied = params.get('denied');
+  if (params.has('denied')) history.replaceState(null, '', '/');
   try {
-    const me = await api('GET', '/me');
-    if (me.authenticated) await showApp();
-    else {
-      showLogin();
-      if (!me.passwordSet) $('#login-err').textContent = 'Hasło nie jest ustawione. Na serwerze uruchom: IdeaBoard.exe set-password';
+    const info = await api('GET', '/me');
+    loginOptions = { google: info.google, password: info.password };
+    if (info.authenticated) return await showApp(info.user);
+    showLogin();
+    if (denied !== null) {
+      $('#login-err').textContent = denied
+        ? `Konto ${denied} nie ma zaproszenia do tej tablicy. Poproś administratora o dodanie.`
+        : 'Logowanie przez Google nie powiodło się. Spróbuj ponownie.';
+    } else if (info.password && !info.passwordSet && !info.google) {
+      $('#login-err').textContent = 'Hasło nie jest ustawione. Na serwerze uruchom: IdeaBoard.exe set-password';
+    } else if (!info.password && !info.google) {
+      $('#login-err').textContent = 'Żadna metoda logowania nie jest włączona (appsettings.json).';
     }
   } catch (e) {
     showLogin();

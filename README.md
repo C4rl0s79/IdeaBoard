@@ -1,6 +1,8 @@
 # IdeaBoard
 
-Self-hosted kanban na pomysły do rozważenia i ewentualnego wdrożenia.
+Self-hosted kanban na pomysły do rozważenia i ewentualnego wdrożenia — z projektami, osobą
+odpowiedzialną za pomysł i jego wdrożenie oraz logowaniem kontami Google na zaproszenie.
+
 Jeden katalog = cała aplikacja: `IdeaBoard.exe` (self-contained, z wbudowanym runtime .NET
 i interfejsem), `appsettings.json` i `data\`. Na docelowej maszynie nie trzeba niczego instalować.
 
@@ -9,16 +11,17 @@ i interfejsem), `appsettings.json` i `data\`. Na docelowej maszynie nie trzeba n
 | Plik | Co to jest |
 |---|---|
 | `IdeaBoard.exe` | serwer + UI (Windows x64) |
-| `appsettings.json` | adres nasłuchu (domyślnie `http://127.0.0.1:5077`) |
+| `appsettings.json` | konfiguracja: adres, Google, logowanie hasłem |
 | `install-service.ps1` / `uninstall-service.ps1` | instalacja / usunięcie usługi Windows |
-| `data\board.json` | tablica (tworzona przy pierwszym starcie) |
+| `data\board.json` | tablica: kolumny, projekty, pomysły (tworzona przy pierwszym starcie) |
+| `data\users.json` | zaproszeni użytkownicy i ich role |
 | `data\backups\` | dzienna kopia tablicy, 30 ostatnich dni |
-| `data\auth.json` | hash hasła (PBKDF2-SHA256) |
+| `data\auth.json` | hash hasła konta awaryjnego (PBKDF2-SHA256) |
 | `data\keys\` | klucze sesji (szyfrowane DPAPI dla tej maszyny) |
 
-Kopia zapasowa = skopiuj `data\`. Przeniesienie na inną maszynę = skopiuj cały katalog
-(po przeniesieniu `data\keys` z innej maszyny nie da się odszyfrować — usuń go, trzeba będzie
-się zalogować ponownie).
+Kopia zapasowa = skopiuj `data\` (i `appsettings.json`, bo jest w nim sekret Google).
+Przeniesienie na inną maszynę = skopiuj cały katalog; `data\keys` z innej maszyny nie da się
+odszyfrować — usuń go, wszyscy zalogują się ponownie.
 
 ## Instalacja na serwerze
 
@@ -28,17 +31,13 @@ się zalogować ponownie).
    cd C:\Apps\IdeaBoard
    powershell -ExecutionPolicy Bypass -File .\install-service.ps1
    ```
-   Skrypt zapyta o hasło (min. 10 znaków), nada uprawnienia kontu `LOCAL SERVICE`
-   (odczyt katalogu, zapis tylko w `data\`), zarejestruje usługę `IdeaBoard`
+   Skrypt zapyta o hasło konta awaryjnego (min. 10 znaków), nada uprawnienia kontu
+   `LOCAL SERVICE` (odczyt katalogu, zapis tylko w `data\`), zarejestruje usługę `IdeaBoard`
    (start automatyczny, restart po awarii) i ją uruchomi.
 3. Sprawdź lokalnie: `http://127.0.0.1:5077`.
 
-Zmiana hasła (wylogowuje wszystkie sesje, usługa może działać):
-```powershell
-.\IdeaBoard.exe set-password
-```
-
 Ręczne uruchomienie bez usługi (np. test): `.\IdeaBoard.exe` i Ctrl+C.
+Po zmianie `appsettings.json`: `Restart-Service IdeaBoard`.
 
 ## Cloudflare Tunnel
 
@@ -52,22 +51,82 @@ ingress:
   - service: http_status:404
 ```
 
-Aplikacja ufa nagłówkom `X-Forwarded-*` tylko od loopback (czyli od `cloudflared`), cookie
-sesji dostaje flagę `Secure` przy HTTPS. Logowanie blokuje adres (`CF-Connecting-IP`) na
-15 minut po 5 błędnych próbach. Opcjonalnie dołóż regułę rate limiting na `/api/login`
-w Cloudflare WAF.
+W `appsettings.json` wpisz publiczny adres — z niego budowany jest adres powrotu z Google:
 
-Inny port: zmień `Urls` w `appsettings.json` i zrestartuj usługę (`Restart-Service IdeaBoard`).
+```json
+"PublicUrl": "https://pomysly.twojadomena.pl"
+```
+
+## Logowanie
+
+Są dwie metody, można włączyć obie:
+
+- **Google** (dla zespołu) — wchodzi tylko adres zaproszony przez admina.
+- **Hasło** (konto awaryjne „Administrator”) — działa bez Google, np. do pierwszej
+  konfiguracji. Wyłączysz je przez `"PasswordLogin": false`. Zmiana hasła:
+  `.\IdeaBoard.exe set-password` (wylogowuje sesje tego konta).
+
+### Konfiguracja Google (jednorazowo)
+
+1. [console.cloud.google.com](https://console.cloud.google.com) → utwórz projekt (np. „IdeaBoard”).
+2. **APIs & Services → OAuth consent screen**: typ **External**, nazwa aplikacji, e-mail
+   kontaktowy. Zakresy domyślne (`openid`, `email`, `profile`) — nie wymagają weryfikacji.
+   Na końcu **Publish app** („In production”); w trybie „Testing” wejdą tylko konta dopisane
+   tam jako testowe.
+3. **APIs & Services → Credentials → Create credentials → OAuth client ID**:
+   - Application type: **Web application**
+   - Authorized redirect URIs: `https://pomysly.twojadomena.pl/signin-google`
+4. Skopiuj Client ID i Client secret do `appsettings.json`:
+   ```json
+   "Google": {
+     "ClientId": "1234-abc.apps.googleusercontent.com",
+     "ClientSecret": "GOCSPX-..."
+   }
+   ```
+5. `Restart-Service IdeaBoard` — na ekranie logowania pojawi się „Zaloguj przez Google”.
+
+### Użytkownicy i role
+
+| Rola | Może |
+|---|---|
+| `admin` | wszystko + zapraszanie użytkowników, role, kolumny |
+| `editor` | dodawać i zmieniać pomysły, notatki, projekty |
+| `viewer` | tylko przeglądać |
+
+Zapraszanie w aplikacji: **Użytkownicy → Zaproś** (adres konta Google + rola). Po dodaniu
+dostajesz gotowy tekst zaproszenia z linkiem — „Otwórz w poczcie” albo „Kopiuj tekst”.
+Aplikacja sama nie wysyła maili.
+
+To samo z konsoli na serwerze (działa też przy uruchomionej usłudze):
+
+```powershell
+.\IdeaBoard.exe user add jan.kowalski@gmail.com editor
+.\IdeaBoard.exe user role jan.kowalski@gmail.com admin
+.\IdeaBoard.exe user remove jan.kowalski@gmail.com
+.\IdeaBoard.exe user list
+```
+
+Usunięcie użytkownika kończy jego sesje od razu.
 
 ## Obsługa
 
 - **+ Pomysł** lub klawisz `N` — nowy pomysł; `+ Dodaj pomysł` pod kolumną — szybkie dodanie samego tytułu.
+- Karta: **projekt**, **odpowiedzialny** (za pomysł i wdrożenie), kolumna, priorytet, tagi,
+  opis, notatki z autorem i datą, historia zmian (kto, co, kiedy).
+- Filtry w nagłówku: projekt, odpowiedzialny (w tym **Moje** i nieprzypisane), tagi, `/` — szukaj.
+  Nowy pomysł dodany przy włączonym filtrze dostaje ten projekt / osobę.
+- **Projekty** — dodawanie, zmiana nazwy, usuwanie (pomysły zostają bez projektu).
 - Przeciąganie kart myszą; na telefonie przytrzymaj kartę ~0,3 s i przeciągnij.
-  Kolumnę można też zmienić w oknie karty.
-- Karta: opis, tagi, priorytet, notatki (dopisywane przemyślenia z datą) i historia przeniesień.
-- `/` — szukaj (tytuł, opis, tagi, notatki); kliknięcie tagu w nagłówku filtruje.
-- Kolumny: kliknij nazwę, aby zmienić; `‹ ›` przesuwa, `✕` usuwa pustą.
+- Kolumny (admin): kliknij nazwę, aby zmienić; `‹ ›` przesuwa, `✕` usuwa pustą.
 - **Eksport** pobiera całą tablicę jako JSON.
+
+## Bezpieczeństwo
+
+- Słucha tylko na loopback; `X-Forwarded-*` przyjmowane tylko od loopback (`cloudflared`).
+- Cookie sesji `HttpOnly`, `SameSite=Lax`, `Secure` przy HTTPS; zapisy wymagają nagłówka
+  `X-IdeaBoard` (ochrona CSRF); role sprawdzane po stronie serwera.
+- Google: wpuszczane tylko zweryfikowane adresy z listy zaproszonych.
+- Hasło: blokada adresu (`CF-Connecting-IP`) na 15 min po 5 błędnych próbach.
 
 ## Budowanie (maszyna deweloperska, .NET SDK 10)
 
@@ -78,4 +137,5 @@ Inny port: zmień `Urls` w `appsettings.json` i zrestartuj usługę (`Restart-Se
 
 Publikacja na istniejący katalog nie nadpisuje `appsettings.json` ani `data\`.
 Przy aktualizacji zatrzymaj najpierw usługę na serwerze (`Stop-Service IdeaBoard`), podmień
-pliki i uruchom ją ponownie.
+pliki i uruchom ją ponownie. Aktualizując z wersji bez Google, dopisz do swojego
+`appsettings.json` klucze `PublicUrl`, `Google` i `PasswordLogin` (wzór w `src\IdeaBoard\appsettings.json`).

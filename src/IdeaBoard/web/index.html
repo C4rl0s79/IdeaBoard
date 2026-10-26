@@ -11,24 +11,36 @@
 </head>
 <body>
   <div id="login" class="login" hidden>
-    <form id="login-form" class="login-box">
+    <div class="login-box">
       <h1>IdeaBoard</h1>
       <p class="muted">Pomysły do rozważenia i wdrożenia</p>
-      <input id="login-pass" type="password" autocomplete="current-password" placeholder="Hasło" required autofocus>
-      <button type="submit" class="primary">Zaloguj</button>
+      <a id="google-login" class="btn google" href="/auth/google" hidden>
+        <svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.5l6.7-6.7C35.6 2.4 30.2 0 24 0 14.6 0 6.6 5.4 2.7 13.2l7.8 6.1C12.4 13.6 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.4c-.5 2.9-2.2 5.3-4.6 6.9l7.5 5.8c4.4-4 6.8-10 6.8-17.2z"/><path fill="#FBBC05" d="M10.5 28.7c-.5-1.4-.8-3-.8-4.7s.3-3.2.8-4.7l-7.8-6.1C1 16.6 0 20.2 0 24s1 7.4 2.7 10.8l7.8-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.5-5.8c-2.1 1.4-4.8 2.3-8.4 2.3-6.3 0-11.6-4.1-13.5-9.8l-7.8 6.1C6.6 42.6 14.6 48 24 48z"/></svg>
+        Zaloguj przez Google
+      </a>
+      <div id="login-sep" class="sep" hidden><span>lub hasło administratora</span></div>
+      <form id="login-form" hidden>
+        <input id="login-pass" type="password" autocomplete="current-password" placeholder="Hasło" required>
+        <button type="submit" class="primary">Zaloguj</button>
+      </form>
       <p id="login-err" class="err" role="alert"></p>
-    </form>
+    </div>
   </div>
 
   <div id="app" hidden>
     <header class="top">
       <h1>IdeaBoard</h1>
-      <button id="new-card" class="primary" title="Nowy pomysł (N)">+ Pomysł</button>
+      <button id="new-card" class="primary" title="Nowy pomysł (N)" data-edit>+ Pomysł</button>
       <input id="search" type="search" placeholder="Szukaj…  ( / )" aria-label="Szukaj">
+      <select id="f-project-filter" aria-label="Projekt"></select>
+      <select id="f-assignee-filter" aria-label="Odpowiedzialny"></select>
       <div id="tag-filter" class="tag-filter"></div>
       <span class="spacer"></span>
-      <button id="add-col" class="ghost">+ Kolumna</button>
+      <button id="open-projects" class="ghost" data-edit>Projekty</button>
+      <button id="open-users" class="ghost" data-admin>Użytkownicy</button>
+      <button id="add-col" class="ghost" data-admin>+ Kolumna</button>
       <a class="ghost btn" href="/api/export" download>Eksport</a>
+      <span id="me" class="me"></span>
       <button id="logout" class="ghost">Wyloguj</button>
     </header>
     <main id="board" class="board"></main>
@@ -41,6 +53,10 @@
         <button type="button" class="ghost icon" data-close aria-label="Zamknij">✕</button>
       </div>
       <div class="row">
+        <label>Projekt <select id="f-project"></select></label>
+        <label>Odpowiedzialny <select id="f-assignee"></select></label>
+      </div>
+      <div class="row">
         <label>Kolumna <select id="f-column"></select></label>
         <label>Priorytet
           <select id="f-priority">
@@ -50,14 +66,14 @@
           </select>
         </label>
       </div>
-      <label>Tagi <input id="f-tags" placeholder="np. launcher, ui, emustart" list="tag-list"></label>
+      <label>Tagi <input id="f-tags" placeholder="np. ui, wydajność, integracja" list="tag-list"></label>
       <datalist id="tag-list"></datalist>
       <label>Opis <textarea id="f-desc" rows="7" placeholder="Na czym polega, po co, za i przeciw…"></textarea></label>
 
       <section id="notes-section">
         <h3>Notatki</h3>
         <ul id="notes" class="notes"></ul>
-        <div class="note-add">
+        <div class="note-add" data-edit>
           <textarea id="f-note" rows="2" placeholder="Dopisz przemyślenie…"></textarea>
           <button type="button" id="add-note" class="ghost">Dodaj</button>
         </div>
@@ -68,13 +84,60 @@
       </section>
 
       <div class="dlg-foot">
-        <button type="button" id="delete-card" class="danger ghost">Usuń</button>
+        <button type="button" id="delete-card" class="danger ghost" data-edit>Usuń</button>
         <span id="card-meta" class="muted small"></span>
         <span class="spacer"></span>
-        <button type="button" class="ghost" data-close>Anuluj</button>
-        <button type="submit" class="primary" title="Ctrl+Enter">Zapisz</button>
+        <button type="button" class="ghost" data-close>Zamknij</button>
+        <button type="submit" class="primary" title="Ctrl+Enter" data-edit>Zapisz</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="projects-dlg" class="narrow">
+    <div class="dlg-head">
+      <h2>Projekty</h2>
+      <span class="spacer"></span>
+      <button type="button" class="ghost icon" data-close aria-label="Zamknij">✕</button>
+    </div>
+    <p class="muted small">Do którego projektu należy pomysł i jego wdrożenie. Usunięcie projektu zostawia pomysły bez projektu.</p>
+    <ul id="projects-list" class="plain-list"></ul>
+    <form id="project-add" class="inline-form">
+      <input id="project-name" placeholder="Nazwa nowego projektu" maxlength="60" required>
+      <button type="submit" class="primary">Dodaj</button>
+    </form>
+  </dialog>
+
+  <dialog id="users-dlg">
+    <div class="dlg-head">
+      <h2>Użytkownicy</h2>
+      <span class="spacer"></span>
+      <button type="button" class="ghost icon" data-close aria-label="Zamknij">✕</button>
+    </div>
+    <p class="muted small">Logowanie kontem Google — wejdzie tylko adres z tej listy.
+      <b>editor</b> dodaje i zmienia pomysły, <b>viewer</b> tylko czyta, <b>admin</b> dodatkowo zarządza użytkownikami i kolumnami.</p>
+    <p id="google-off" class="warn small" hidden>Logowanie Google nie jest skonfigurowane na serwerze (appsettings.json → Google) — zaproszeni nie będą mogli się jeszcze zalogować.</p>
+    <table class="users">
+      <thead><tr><th>Użytkownik</th><th>Rola</th><th>Ostatnio</th><th></th></tr></thead>
+      <tbody id="users-list"></tbody>
+    </table>
+    <h3>Zaproś</h3>
+    <form id="invite-form" class="inline-form">
+      <input id="invite-email" type="email" placeholder="adres@gmail.com" required>
+      <select id="invite-role">
+        <option value="editor">editor</option>
+        <option value="viewer">viewer</option>
+        <option value="admin">admin</option>
+      </select>
+      <button type="submit" class="primary">Zaproś</button>
+    </form>
+    <div id="invite-result" class="invite-result" hidden>
+      <p>Dodano <b id="invite-who"></b>. Wyślij zaproszenie:</p>
+      <textarea id="invite-text" rows="4" readonly></textarea>
+      <div class="inline-form">
+        <a id="invite-mail" class="btn primary">Otwórz w poczcie</a>
+        <button type="button" id="invite-copy" class="ghost">Kopiuj tekst</button>
+      </div>
+    </div>
   </dialog>
 
   <div id="toast" class="toast" role="status" hidden></div>
